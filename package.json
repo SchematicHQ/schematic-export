@@ -1,0 +1,31 @@
+{
+  "name": "schematic-export",
+  "version": "0.1.0",
+  "description": "Export your Schematic configuration, usage, and SDK snapshot so your app keeps running without the Schematic API.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "schematic-export": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1141.0",
+    "@schematichq/schematic-typescript-node": "^1.6.2",
+    "commander": "^15.0.0",
+    "redis": "^6.2.1",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
