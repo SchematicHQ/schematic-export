@@ -4,7 +4,7 @@
 
 import { createServer } from "node:http";
 
-export function serveHealth(port: number, cacheVersion: string, log: (msg: string) => void): void {
+export function serveHealth(port: number, cacheVersion: string, log: (msg: string) => void, host = "0.0.0.0"): void {
   const body = JSON.stringify({ ready: true, cache_version: cacheVersion, source: "schematic-export" });
 
   createServer((req, res) => {
@@ -14,5 +14,5 @@ export function serveHealth(port: number, cacheVersion: string, log: (msg: strin
       return;
     }
     res.writeHead(404).end();
-  }).listen(port, () => log(`serving replicator health on http://localhost:${port}/health (cache version ${cacheVersion})`));
+  }).listen(port, host, () => log(`serving replicator health on http://${host}:${port}/health (cache version ${cacheVersion})`));
 }

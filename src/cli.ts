@@ -28,6 +28,18 @@ function api(): Api {
   return createApi(apiKey, process.env.SCHEMATIC_API_URL ?? DEFAULT_API_URL);
 }
 
+// Scheduled runs only need the events since the previous run, so `all` picks
+// up from when the last run at the same destination started. Events are
+// exported newest first, so this is a cutoff, not a filter; the overlap with
+// the previous run is intended.
+async function sinceLastRun(out: string): Promise<Date | undefined> {
+  const previous = await Run.previous(out);
+  if (!previous?.startedAt) return undefined;
+  const since = new Date(previous.startedAt);
+  log(`usage: exporting events since the previous run started (${since.toISOString()}); pass --since to change`);
+  return since;
+}
+
 function parseDate(value: string): Date {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw new InvalidArgumentError("expected a date, e.g. 2026-01-31");
@@ -69,6 +81,11 @@ const program = new Command()
 
 const outOption = ["-o, --out <dest>", "local directory or s3://bucket/prefix", "./schematic-export"] as const;
 const sinceOption = ["--since <date>", "only export events captured on or after this date", parseDate] as const;
+const allSinceOption = [
+  "--since <date>",
+  "only export events captured on or after this date (default: when the previous run at --out started, or everything on a first run)",
+  parseDate,
+] as const;
 const prefixOption = ["--prefix <prefix>", "Redis key prefix", "schematic:"] as const;
 const redisOption = ["--redis <url>", "your replicator's Redis, to back it up (otherwise the snapshot is built from Schematic)"] as const;
 
@@ -76,7 +93,7 @@ program
   .command("all")
   .description("run config, usage, and snapshot together (the one to schedule)")
   .option(...outOption)
-  .option(...sinceOption)
+  .option(...allSinceOption)
   .option(...redisOption)
   .option(...prefixOption)
   .action((opts) =>
@@ -85,7 +102,7 @@ program
         source,
         summary: {
           config: await exportConfig(schematic, run, log),
-          usage: await exportUsage(schematic, run, log, { since: opts.since }),
+          usage: await exportUsage(schematic, run, log, { since: opts.since ?? (await sinceLastRun(opts.out)) }),
           snapshot: await takeSnapshot(run, log, { redisUrl: opts.redis, prefix: opts.prefix }, { api: schematic, toolVersion: version }),
         },
       })),
@@ -145,9 +162,10 @@ program
   .description("serve the replicator's health endpoint for a restored snapshot, when the replicator itself isn't running")
   .requiredOption("--from <source>", "export destination or run directory the snapshot was restored from")
   .option("-p, --port <port>", "port", (v) => Number.parseInt(v, 10), 8090)
+  .option("--host <host>", "address to listen on", "0.0.0.0")
   .action(async (opts) => {
     const manifest = await readManifest(opts.from);
-    serveHealth(opts.port, manifest.cacheVersion, log);
+    serveHealth(opts.port, manifest.cacheVersion, log, opts.host);
   });
 
 // Keeps passwords in Redis URLs out of run.json.

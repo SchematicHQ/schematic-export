@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "Keep a copy of your Schematic data: plan configuration, usage, and a backup of your replicator cache.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SchematicHQ/schematic-export.git"
+  },
+  "homepage": "https://github.com/SchematicHQ/schematic-export#readme",
+  "bugs": {
+    "url": "https://github.com/SchematicHQ/schematic-export/issues"
+  },
   "type": "module",
   "bin": {
     "schematic-export": "dist/cli.js"
@@ -27,9 +35,5 @@
     "@types/ws": "^8.18.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
-  },
-  "allowScripts": {
-    "esbuild": true,
-    "fsevents": false
   }
 }

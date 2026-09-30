@@ -9,6 +9,10 @@ import { SNAPSHOT_FORMAT, SNAPSHOT_FORMAT_VERSION } from "./snapshot.js";
 
 type Row = Record<string, unknown>;
 
+// Keys are written in transactions of this size, so a large snapshot doesn't
+// become one enormous MULTI held in memory on both ends.
+const BATCH_SIZE = 1000;
+
 export interface SnapshotManifest {
   format: string;
   formatVersion: number;
@@ -39,31 +43,31 @@ export async function restore(
   const companies = JSON.parse(await readFromRun(source, "snapshot/companies.json")) as Row[];
   const users = JSON.parse(await readFromRun(source, "snapshot/users.json")) as Row[];
 
+  const entries: [string, string][] = [];
+  for (const flag of flags) {
+    entries.push([flagKey(prefix, version, String(flag.key)), JSON.stringify(flag)]);
+  }
+  for (const [type, entities] of [["company", companies], ["user", users]] as const) {
+    for (const entity of entities) {
+      const id = String(entity.id);
+      entries.push([idKey(prefix, type, version, id), JSON.stringify(entity)]);
+      for (const [k, v] of Object.entries((entity.keys as Record<string, string>) ?? {})) {
+        entries.push([lookupKey(prefix, type, version, k, v), JSON.stringify(id)]);
+      }
+    }
+  }
+
   const redis = createClient({ url: redisUrl });
   await redis.connect();
   let keys = 0;
 
   try {
-    const multi = redis.multi();
-
-    for (const flag of flags) {
-      multi.set(flagKey(prefix, version, String(flag.key)), JSON.stringify(flag));
-      keys++;
+    for (let i = 0; i < entries.length; i += BATCH_SIZE) {
+      const multi = redis.multi();
+      for (const [key, value] of entries.slice(i, i + BATCH_SIZE)) multi.set(key, value);
+      await multi.exec();
+      keys += Math.min(BATCH_SIZE, entries.length - i);
     }
-
-    for (const [type, entities] of [["company", companies], ["user", users]] as const) {
-      for (const entity of entities) {
-        const id = String(entity.id);
-        multi.set(idKey(prefix, type, version, id), JSON.stringify(entity));
-        keys++;
-        for (const [k, v] of Object.entries((entity.keys as Record<string, string>) ?? {})) {
-          multi.set(lookupKey(prefix, type, version, k, v), JSON.stringify(id));
-          keys++;
-        }
-      }
-    }
-
-    await multi.exec();
   } finally {
     await redis.quit();
   }

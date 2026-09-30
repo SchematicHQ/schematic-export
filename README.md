@@ -14,6 +14,12 @@ If you run the replicator, you're already covered for keeping your app running. 
 
 The tool only reads from Schematic. It never creates, changes, or deletes anything.
 
+## What the export contains
+
+The export is your data, written as plain JSON with no encryption. That includes your customers' company and user records (names, emails, and any traits you've set), company overrides, and raw event bodies. Treat the output directory or bucket the way you'd treat a database backup: restrict who can read it, encrypt it at rest (S3 server-side encryption, for example), and keep it out of source control. The default output directory is gitignored in this repo, but that only helps if you run the tool from here.
+
+Webhook signing secrets and API key details are left out of the export.
+
 ## Requirements
 
 - Node.js 20.12 or later
@@ -38,7 +44,7 @@ We recommend keeping your API key in a `.env` file in the repo directory. It's a
 SCHEMATIC_API_KEY=sch_...
 ```
 
-(Exporting `SCHEMATIC_API_KEY` in your shell works too.)
+(Exporting `SCHEMATIC_API_KEY` in your shell works too. `SCHEMATIC_API_URL` overrides the API base URL, which you shouldn't need unless Schematic has given you a different one.)
 
 Then run everything at once:
 
@@ -66,12 +72,12 @@ Every run logs the account and environment it's exporting, so you can confirm yo
 
 | Command | What it does |
 |---|---|
-| `all` | Runs `config`, `usage`, and `snapshot`. Schedule this one. |
+| `all` | Runs `config`, `usage`, and `snapshot`. Schedule this one. Events are exported incrementally, see below. |
 | `config` | Exports plan configuration and account data. |
-| `usage` | Exports events and current usage per company. `--since <date>` limits how far back events go. |
+| `usage` | Exports every event, and current usage per company. `--since <date>` limits how far back events go. |
 | `snapshot` | Takes a snapshot from your replicator (`--redis <url>`) or from Schematic. |
 | `restore` | Writes a snapshot back into Redis. `--from <dir>`, `--redis <url>`, `--prefix <prefix>`. |
-| `serve-health` | Serves the replicator's health endpoint from a snapshot, for when the replicator itself isn't running. `--from <dir>`, `--port <port>`. |
+| `serve-health` | Serves the replicator's health endpoint from a snapshot, for when the replicator itself isn't running. `--from <dir>`, `--port <port>`, `--host <host>`. |
 
 `--out` takes a local directory or an S3 location (`s3://bucket/prefix`). S3 uses the standard AWS credential chain.
 
@@ -105,6 +111,12 @@ jobs:
 ```
 
 Turn on bucket versioning to keep a history of runs.
+
+### Events are exported incrementally
+
+Config, current usage, and the snapshot are complete in every run. Events are different: the first `all` run at a destination exports your whole event history, and each later run exports only events captured since the previous run started (it reads that from `latest.json`). So a scheduled `all` doesn't re-download your entire event log every day, and the full history is the union of `usage/events.jsonl` across runs. Runs overlap slightly on purpose, so an event can appear in two consecutive runs. Dedupe on `id` if that matters to you.
+
+To take a different cut, pass `--since <date>` to `all`, or run `usage` on its own, which exports everything unless you pass `--since`.
 
 ## Two ways to take a snapshot
 

@@ -23,26 +23,38 @@ function s3Key(loc: S3Location, rel: string): string {
   return loc.prefix ? `${loc.prefix}/${rel}` : rel;
 }
 
+export interface Latest {
+  runId: string;
+  startedAt: string;
+  finishedAt: string;
+}
+
 // A single export run, written to <dest>/<runId>/.
 export class Run {
   readonly runId: string;
+  readonly startedAt: Date;
   private readonly root: string;
 
   private constructor(
     private readonly dest: string,
     private readonly s3: S3Location | undefined,
     private readonly staging: string,
-    runId: string,
+    startedAt: Date,
   ) {
-    this.runId = runId;
-    this.root = join(staging, runId);
+    this.startedAt = startedAt;
+    this.runId = startedAt.toISOString().replace(/[:.]/g, "-");
+    this.root = join(staging, this.runId);
   }
 
   static async start(dest: string): Promise<Run> {
-    const runId = new Date().toISOString().replace(/[:.]/g, "-");
     const s3 = parseS3(dest);
     const staging = s3 ? await mkdtemp(join(tmpdir(), "schematic-export-")) : dest;
-    return new Run(dest, s3, staging, runId);
+    return new Run(dest, s3, staging, new Date());
+  }
+
+  // The previous run at this destination, from latest.json, or undefined on a first run.
+  static async previous(dest: string): Promise<Latest | undefined> {
+    return readLatest(dest).catch(() => undefined);
   }
 
   get location(): string {
@@ -71,7 +83,7 @@ export class Run {
 
   // Uploads to S3 if needed, then points latest.json at this run.
   async finish(): Promise<void> {
-    const latest = { runId: this.runId, finishedAt: new Date().toISOString() };
+    const latest: Latest = { runId: this.runId, startedAt: this.startedAt.toISOString(), finishedAt: new Date().toISOString() };
     if (!this.s3) {
       await writeFile(join(this.dest, "latest.json"), JSON.stringify(latest, null, 2) + "\n");
       return;
@@ -96,26 +108,25 @@ export class Run {
   }
 }
 
+// Reads a file relative to a local directory or an s3://bucket/prefix.
+async function readAt(source: string, rel: string): Promise<string> {
+  const s3 = parseS3(source);
+  if (!s3) return readFile(join(source, rel), "utf8");
+  const res = await new S3Client({}).send(new GetObjectCommand({ Bucket: s3.bucket, Key: s3Key(s3, rel) }));
+  return res.Body!.transformToString();
+}
+
+async function readLatest(dest: string): Promise<Latest> {
+  return JSON.parse(await readAt(dest, "latest.json")) as Latest;
+}
+
 // Reads a file from a run. `source` is either a run directory / s3 run prefix,
 // or the top-level export destination, in which case latest.json picks the run.
 export async function readFromRun(source: string, rel: string): Promise<string> {
-  const s3 = parseS3(source);
-  if (s3) {
-    const client = new S3Client({});
-    const get = async (key: string) => {
-      const res = await client.send(new GetObjectCommand({ Bucket: s3.bucket, Key: key }));
-      return res.Body!.transformToString();
-    };
-    const runPrefix = await get(s3Key(s3, "latest.json"))
-      .then((body) => s3Key(s3, JSON.parse(body).runId))
-      .catch(() => s3.prefix);
-    return get(runPrefix ? `${runPrefix}/${rel}` : rel);
-  }
-
-  const runDir = await readFile(join(source, "latest.json"), "utf8")
-    .then((body) => join(source, JSON.parse(body).runId))
+  const runDir = await readLatest(source)
+    .then((latest) => `${source.replace(/\/$/, "")}/${latest.runId}`)
     .catch(() => source);
-  return readFile(join(runDir, rel), "utf8");
+  return readAt(runDir, rel);
 }
 
 async function listFiles(dir: string): Promise<string[]> {

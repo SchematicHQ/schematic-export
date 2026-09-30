@@ -62,5 +62,10 @@ export async function exportUsage(
   }));
   await run.writeJson("usage/current-usage.json", current);
 
-  return { "events.jsonl": eventCount, oldestEvent: oldest?.toISOString() ?? null, "current-usage.json": current.length };
+  return {
+    "events.jsonl": eventCount,
+    since: options.since?.toISOString() ?? null,
+    oldestEvent: oldest?.toISOString() ?? null,
+    "current-usage.json": current.length,
+  };
 }
