@@ -71,7 +71,7 @@ export class Run {
 
   // Uploads to S3 if needed, then points latest.json at this run.
   async finish(): Promise<void> {
-    const latest = { run_id: this.runId, finished_at: new Date().toISOString() };
+    const latest = { runId: this.runId, finishedAt: new Date().toISOString() };
     if (!this.s3) {
       await writeFile(join(this.dest, "latest.json"), JSON.stringify(latest, null, 2) + "\n");
       return;
@@ -107,13 +107,13 @@ export async function readFromRun(source: string, rel: string): Promise<string> 
       return res.Body!.transformToString();
     };
     const runPrefix = await get(s3Key(s3, "latest.json"))
-      .then((body) => s3Key(s3, JSON.parse(body).run_id))
+      .then((body) => s3Key(s3, JSON.parse(body).runId))
       .catch(() => s3.prefix);
     return get(runPrefix ? `${runPrefix}/${rel}` : rel);
   }
 
   const runDir = await readFile(join(source, "latest.json"), "utf8")
-    .then((body) => join(source, JSON.parse(body).run_id))
+    .then((body) => join(source, JSON.parse(body).runId))
     .catch(() => source);
   return readFile(join(runDir, rel), "utf8");
 }

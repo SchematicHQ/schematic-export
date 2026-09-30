@@ -4,37 +4,42 @@
 // every company/flag result against each company's feature access from the
 // live API (GET /feature-usage).
 //
-// Usage: SCHEMATIC_API_KEY=... tsx scripts/verify-replicator.ts <export-dir> <redis-url>
+// Usage: tsx scripts/verify-replicator.ts <export-dir> <redis-url>
+// Reads SCHEMATIC_API_KEY from ./.env or the environment.
 
-import { SchematicClient } from "@schematichq/schematic-typescript-node";
+import { SchematicClient, type RedisClient } from "@schematichq/schematic-typescript-node";
 import { createClient } from "redis";
-import { ApiClient } from "../src/api.js";
+import { createApi, listAll, REQUEST_OPTIONS as opts } from "../src/api.js";
 import { readManifest } from "../src/commands/restore.js";
 import { serveHealth } from "../src/commands/serve-health.js";
 
-type Row = Record<string, unknown>;
+try {
+  process.loadEnvFile();
+} catch (err) {
+  if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+}
 
 const [exportDir = "./export", redisUrl = "redis://localhost:6379"] = process.argv.slice(2);
 const UNREACHABLE = "http://127.0.0.1:9";
 const HEALTH_PORT = 8091;
 
-const api = new ApiClient({ apiKey: process.env.SCHEMATIC_API_KEY!, log: console.error });
-const whoami = await api.get<Row>("/whoami");
-console.error(`oracle account: ${whoami.account_name} (${whoami.account_id})`);
+const { client: live } = createApi(process.env.SCHEMATIC_API_KEY!);
+const { data: whoami } = await live.accounts.getWhoAmI(opts);
+console.error(`oracle account: ${whoami.accountName} (${whoami.accountId})`);
 
 // Oracle: which features each company has access to, according to the API.
-const flags = await api.listAll<Row>("/flags");
-const featureFlags = flags.filter((f) => f.feature_id);
-const companies = await api.listAll<Row>("/companies");
+const flags = await listAll((p) => live.features.listFlags(p, opts));
+const featureFlags = flags.filter((f) => f.featureId);
+const companies = await listAll((p) => live.companies.listCompanies(p, opts));
 const expected = new Map<string, Map<string, boolean>>();
 for (const company of companies) {
-  const usage = await api.listAll<Row>("/feature-usage", { company_id: String(company.id) });
-  expected.set(String(company.id), new Map(usage.map((u) => [String((u.feature as Row).id), Boolean(u.access)])));
+  const usage = await listAll((p) => live.entitlements.listFeatureUsage({ ...p, companyId: company.id }, opts));
+  expected.set(company.id, new Map(usage.map((u) => [u.feature?.id ?? "", u.access])));
 }
 
 // Offline: SDK in replicator mode, reading only from the restored Redis.
 const manifest = await readManifest(exportDir);
-serveHealth(HEALTH_PORT, manifest.cache_version, console.error);
+serveHealth(HEALTH_PORT, manifest.cacheVersion, console.error);
 
 const redis = createClient({ url: redisUrl });
 await redis.connect();
@@ -45,7 +50,9 @@ const client = new SchematicClient({
   useDataStream: true,
   dataStream: {
     replicatorMode: true,
-    redisClient: redis,
+    // The SDK's RedisClient type matches redis v4, where scanIterator yields single
+    // keys. redis v5+ yields batches. Replicator mode never scans, so this is safe.
+    redisClient: redis as unknown as RedisClient,
     replicatorHealthURL: `http://localhost:${HEALTH_PORT}/health`,
     replicatorHealthCheck: 500,
   },
@@ -58,15 +65,15 @@ const reasons = new Map<string, number>();
 const mismatches: string[] = [];
 
 for (const company of companies) {
-  const keys = (company.keys as Row[]) ?? [];
-  if (keys.length === 0) continue;
-  const evalKeys = { [String(keys[0].key)]: String(keys[0].value) };
-  const access = expected.get(String(company.id))!;
+  const [first] = company.keys;
+  if (!first) continue;
+  const evalKeys = { [first.key]: first.value };
+  const access = expected.get(company.id)!;
 
   for (const flag of featureFlags) {
-    const want = access.get(String(flag.feature_id));
+    const want = access.get(flag.featureId!);
     if (want === undefined) continue;
-    const got = await client.checkFlagWithEntitlement({ company: evalKeys }, String(flag.key));
+    const got = await client.checkFlagWithEntitlement({ company: evalKeys }, flag.key);
     checked++;
     reasons.set(got.reason, (reasons.get(got.reason) ?? 0) + 1);
     if (got.value === want) matched++;
@@ -76,5 +83,6 @@ for (const company of companies) {
 
 console.log(JSON.stringify({ checked, matched, mismatched: mismatches.length, reasons: Object.fromEntries(reasons), mismatches: mismatches.slice(0, 20) }, null, 2));
 await client.close();
+await live.close();
 await redis.quit();
 process.exit(mismatches.length ? 1 : 0);

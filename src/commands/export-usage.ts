@@ -1,10 +1,8 @@
 // Exports usage data: the raw event history, and each company's current
 // usage against its limits (what you need to keep enforcing limits).
 
-import type { ApiClient } from "../api.js";
+import { type Api, listAll, paginate, REQUEST_OPTIONS as opts } from "../api.js";
 import type { Run } from "../output.js";
-
-type Row = Record<string, unknown>;
 
 export interface UsageOptions {
   // Stop at events captured before this date. Events come back newest first.
@@ -12,25 +10,26 @@ export interface UsageOptions {
 }
 
 export async function exportUsage(
-  api: ApiClient,
+  api: Api,
   run: Run,
   log: (msg: string) => void,
-  opts: UsageOptions = {},
+  options: UsageOptions = {},
 ): Promise<Record<string, number | string | null>> {
+  const { client } = api;
   const events = await run.openJsonl("usage/events.jsonl");
   let eventCount = 0;
-  let oldest: string | null = null;
+  let oldest: Date | null = null;
 
   try {
-    pages: for await (const page of api.paginate<Row>("/events")) {
-      for (const { api_key: _key, api_key_view: _keyView, body_preview: _preview, ...event } of page) {
-        const capturedAt = String(event.captured_at);
-        if (opts.since && new Date(capturedAt) < opts.since) break pages;
+    pages: for await (const page of paginate((p) => client.events.listEvents(p, opts))) {
+      // API key details and the truncated preview aren't part of the event.
+      for (const { apiKey: _key, apiKeyView: _keyView, bodyPreview: _preview, ...event } of page) {
+        if (options.since && event.capturedAt < options.since) break pages;
         await events.write(event);
         eventCount++;
-        oldest = capturedAt;
+        oldest = event.capturedAt;
       }
-      log(`usage: ${eventCount} events (back to ${oldest})`);
+      log(`usage: ${eventCount} events (back to ${oldest?.toISOString()})`);
     }
   } finally {
     await events.close();
@@ -38,30 +37,30 @@ export async function exportUsage(
 
   // Current-period usage per company and feature, from each company's entitlements.
   log("usage: current usage per company");
-  const companies = await api.listAll<Row>("/companies");
+  const companies = await listAll((p) => client.companies.listCompanies(p, opts));
   const current = companies.map((c) => ({
-    company_id: c.id,
+    companyId: c.id,
     name: c.name,
-    keys: Object.fromEntries(((c.keys as Row[]) ?? []).map((k) => [k.key, k.value])),
-    usage: ((c.entitlements as Row[]) ?? []).map((e) => ({
-      feature_id: e.feature_id,
-      feature_key: e.feature_key,
-      event_subtype: e.event_subtype,
-      value_type: e.value_type,
+    keys: Object.fromEntries(c.keys.map((k) => [k.key, k.value])),
+    usage: (c.entitlements ?? []).map((e) => ({
+      featureId: e.featureId,
+      featureKey: e.featureKey,
+      eventSubtype: e.eventSubtype,
+      valueType: e.valueType,
       usage: e.usage,
       allocation: e.allocation,
-      soft_limit: e.soft_limit,
-      metric_period: e.metric_period,
-      month_reset: e.month_reset,
-      metric_reset_at: e.metric_reset_at,
-      credit_id: e.credit_id,
-      credit_used: e.credit_used,
-      credit_remaining: e.credit_remaining,
-      credit_total: e.credit_total,
+      softLimit: e.softLimit,
+      metricPeriod: e.metricPeriod,
+      monthReset: e.monthReset,
+      metricResetAt: e.metricResetAt,
+      creditId: e.creditId,
+      creditUsed: e.creditUsed,
+      creditRemaining: e.creditRemaining,
+      creditTotal: e.creditTotal,
     })),
-    credit_balances: c.billing_credit_balances ?? null,
+    creditBalances: c.billingCreditBalances ?? null,
   }));
   await run.writeJson("usage/current-usage.json", current);
 
-  return { "events.jsonl": eventCount, oldest_event: oldest, "current-usage.json": current.length };
+  return { "events.jsonl": eventCount, oldestEvent: oldest?.toISOString() ?? null, "current-usage.json": current.length };
 }
