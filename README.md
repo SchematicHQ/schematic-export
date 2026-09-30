@@ -1,58 +1,51 @@
 # schematic-export
 
-Your Schematic data is yours. `schematic-export` keeps a copy of it on your own infrastructure, so your app keeps running and your options stay open, whatever happens.
+Your Schematic data is yours. `schematic-export` is a tool to create a snapshot of your Schematic account: your plan configuration, your customers, your usage history, and the cache your SDKs evaluate flags against, written as JSON to a directory or S3 bucket you control.
 
-## Start with the replicator
+It only reads from Schematic. It never creates, changes, or deletes anything.
 
-The [replicator](https://docs.schematichq.com/developer_resources/sdks/cross-platform-features#replicator) is the foundation. It keeps a complete copy of your flags, companies, and users in your own Redis, and backend SDKs in replicator mode evaluate flags from that copy instead of calling Schematic. If Schematic is ever unreachable, your flag checks keep working from what's already in your Redis, and `track` calls keep counting usage locally.
+## What it exports
 
-If you run the replicator, you're already covered for keeping your app running. This tool adds the rest:
+Each run writes three groups of files.
 
-- **Config export.** Plans, plan versions and their entitlements, add-ons, features, flags, credits, companies, company overrides, users, billing product mappings, and webhooks, as JSON. Everything you'd need to rebuild your pricing elsewhere.
-- **Usage export.** Your event history and each company's current usage against its limits.
-- **Snapshot.** A copy of the cache your SDKs evaluate flags against, and a `restore` command that writes it into Redis. Take it from your replicator, or build it straight from Schematic if you don't run the replicator yet.
+### Config
 
-The tool only reads from Schematic. It never creates, changes, or deletes anything.
+Everything you'd need to rebuild your pricing and entitlements.
 
-## What the export contains
+| File | Contents |
+|---|---|
+| `plans.json` | Plans and add-ons (`planType: "add_on"`), with their versions, pricing, billing product, features, credits, and trial settings. |
+| `plan-version-entitlements.json` | The entitlements of every plan version, not just the current one, since companies can sit on an older version. |
+| `plan-groups.json` | Default, fallback, and trial plan settings, plan and add-on ordering, and checkout settings. |
+| `features.json` | Features, with their type, event subtype, flags, and the plans that include them. |
+| `flags.json` | Flags and their rules. |
+| `company-overrides.json` | Per-company entitlement overrides. |
+| `companies.json` | Companies, with their keys, traits, plan, add-ons, entitlements, billing subscription, and credit balances. |
+| `users.json` | Users, with their keys, traits, and company memberships. |
+| `credits.json`, `credit-bundles.json`, `plan-credit-grants.json`, `credit-grants.json` | Credits, the bundles they're sold in, the grants each plan includes, and every grant issued. |
+| `plan-traits.json` | Plan-level traits. |
+| `billing-products.json`, `billing-meters.json` | Products, prices, and meters synced from your billing provider. |
+| `trait-definitions.json`, `key-definitions.json` | The trait and key definitions for companies and users. |
+| `components.json` | Embeddable components and their layout. |
+| `webhooks.json` | Webhook endpoints, the request types they subscribe to, and their trigger configuration. Signing secrets are left out. |
 
-The export is your data, written as plain JSON with no encryption. That includes your customers' company and user records (names, emails, and any traits you've set), company overrides, and raw event bodies. Treat the output directory or bucket the way you'd treat a database backup: restrict who can read it, encrypt it at rest (S3 server-side encryption, for example), and keep it out of source control. The default output directory is gitignored in this repo, but that only helps if you run the tool from here.
+### Usage
 
-Webhook signing secrets and API key details are left out of the export.
+| File | Contents |
+|---|---|
+| `events.jsonl` | Your event history, one event per line, newest first. API key details are left out. |
+| `current-usage.json` | Each company's current usage against each of its limits, plus credit balances. |
 
-## Requirements
+### Snapshot
 
-- Node.js 20.12 or later
-- A Schematic API key. A [read-only key](https://docs.schematichq.com/api-reference/authentication) is all it needs.
-- Redis, to restore a snapshot
+| File | Contents |
+|---|---|
+| `flags.json`, `companies.json`, `users.json` | The flags, companies, and users your SDKs evaluate, in the exact format the replicator stores. |
+| `manifest.json` | Cache version, counts, and where the snapshot came from. |
 
-## Install
+The snapshot is what lets your app keep running if Schematic is unreachable. See [Running without Schematic](#running-without-schematic).
 
-```bash
-git clone https://github.com/SchematicHQ/schematic-export.git
-cd schematic-export
-npm install && npm run build
-```
-
-Run every command from the repo directory.
-
-## Usage
-
-We recommend keeping your API key in a `.env` file in the repo directory. It's already gitignored.
-
-```bash
-SCHEMATIC_API_KEY=sch_...
-```
-
-(Exporting `SCHEMATIC_API_KEY` in your shell works too. `SCHEMATIC_API_URL` overrides the API base URL, which you shouldn't need unless Schematic has given you a different one.)
-
-Then run everything at once:
-
-```bash
-node dist/cli.js all --out ./schematic-export
-```
-
-If you run the replicator, add `--redis redis://your-redis:6379` so the snapshot is a backup of your replicator's cache. See [Two ways to take a snapshot](#two-ways-to-take-a-snapshot).
+### Output layout
 
 Each run writes to a timestamped directory and updates `latest.json` to point at it:
 
@@ -66,7 +59,41 @@ schematic-export/
     snapshot/              manifest.json, flags.json, companies.json, users.json
 ```
 
-Every run logs the account and environment it's exporting, so you can confirm you're using the key you meant to.
+`run.json` records which account and environment the run exported, so you can confirm you used the key you meant to.
+
+## Requirements
+
+- Node.js 20.12 or later
+- A Schematic API key. A [read-only key](https://docs.schematichq.com/api-reference/authentication) is all it needs.
+- Redis, only if you want to [restore a snapshot](#running-without-schematic)
+
+## Install
+
+```bash
+git clone https://github.com/SchematicHQ/schematic-export.git
+cd schematic-export
+npm install && npm run build
+```
+
+Run every command from the repo directory.
+
+## Usage
+
+Keep your API key in a `.env` file in the repo directory. It's already gitignored.
+
+```bash
+SCHEMATIC_API_KEY=sch_...
+```
+
+(Exporting `SCHEMATIC_API_KEY` in your shell works too. `SCHEMATIC_API_URL` overrides the API base URL, which you shouldn't need unless Schematic has given you a different one.)
+
+Then run everything at once:
+
+```bash
+node dist/cli.js all --out ./schematic-export
+```
+
+If you run the replicator, add `--redis redis://your-redis:6379` so the snapshot is a backup of your replicator's cache rather than one built from Schematic. See [Two ways to take a snapshot](#two-ways-to-take-a-snapshot).
 
 ### Commands
 
@@ -118,7 +145,17 @@ Config, current usage, and the snapshot are complete in every run. Events are di
 
 To take a different cut, pass `--since <date>` to `all`, or run `usage` on its own, which exports everything unless you pass `--since`.
 
-## Two ways to take a snapshot
+### Keep the output safe
+
+The export is your data, written as plain JSON with no encryption. That includes your customers' company and user records (names, emails, and any traits you've set), company overrides, and raw event bodies. Treat the output directory or bucket the way you'd treat a database backup: restrict who can read it, encrypt it at rest (S3 server-side encryption, for example), and keep it out of source control. The default output directory is gitignored in this repo, but that only helps if you run the tool from here.
+
+## Running without Schematic
+
+The [replicator](https://docs.schematichq.com/developer_resources/sdks/cross-platform-features#replicator) is how you keep your app running if Schematic is ever unreachable. It keeps a complete copy of your flags, companies, and users in your own Redis, and backend SDKs in replicator mode evaluate flags from that copy instead of calling Schematic. Flag checks keep working from what's already in Redis, and `track` calls keep counting usage locally.
+
+If you run the replicator, you're already covered. The snapshot this tool takes is a backup of that cache, and `restore` puts it back. If you don't run the replicator, the snapshot gives you the same cache without ever having run one.
+
+### Two ways to take a snapshot
 
 Both produce a snapshot in the same format, and `restore` works the same way for either.
 
@@ -134,7 +171,7 @@ node dist/cli.js snapshot --redis redis://your-redis:6379 --out ./schematic-expo
 node dist/cli.js snapshot --out ./schematic-export
 ```
 
-## Restore from a snapshot
+### Restore from a snapshot
 
 Restore a snapshot to rebuild your replicator's cache if it's ever lost, or to start serving from a replicator cache if you weren't running one. Either way:
 
@@ -179,7 +216,7 @@ Restore a snapshot to rebuild your replicator's cache if it's ever lost, or to s
 - Frontend SDKs check flags with Schematic directly. Set [flag defaults](https://docs.schematichq.com/production_readiness/availability) so client-side checks always resolve to the behavior you choose.
 - Keep your SDK version steady while serving from a snapshot. The snapshot records its cache version in `manifest.json`.
 
-## Verifying a snapshot
+### Verifying a snapshot
 
 Run `scripts/verify-replicator.ts` after `restore` to check a snapshot end to end. It runs the Node SDK in replicator mode with the Schematic API and event capture pointed at an unreachable address, and compares every company and flag against the live API.
 
